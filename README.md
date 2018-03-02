@@ -11,7 +11,7 @@ assuming you have my libs in the same place as i do on my box lol
 then you can test locally with
 
 ```
-	./dl GET /some/path --host=whatever.dpldocs.info
+	./dl GET /some/path --host whatever.dpldocs.info
 ```
 
 Note that the directories it wants to write to are hardcoded, as are a few

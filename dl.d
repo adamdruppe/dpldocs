@@ -1,5 +1,7 @@
 //  dmd -debug  -m64 dl ~/arsd/{cgi,dom,http2,jsvar} -version=scgi  && gzip dl && scp dl.gz root@droplet:/root/dpldocs
 // FIXME: drop privs if called as root!!!!!!
+
+// Copyright Adam D. Ruppe 2018. All Rights Reserved.
 import arsd.dom;
 import arsd.http2;
 import arsd.cgi;
