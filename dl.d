@@ -112,6 +112,17 @@ try {
 
 		if(path[0] == '/')
 			path = path[1 .. $];
+		if(path == "search/search") {
+			cgi.setResponseLocation("/search-docs.html" ~ query);
+			return;
+		} else if(path == "arsd.docs.adrdoc.help.html") {
+			cgi.setResponseLocation("http://dpldocs.info/experimental-docs/arsd.docs.adrdoc.help.html");
+			return;
+		} else if(path == "d-logo.png") {
+			cgi.setResponseLocation("http://dpldocs.info/d-logo.png");
+			return;
+		}
+
 		auto idx = path.indexOf("/");
 		if(idx != -1) {
 			versionTag = path[0 .. idx];
@@ -277,6 +288,7 @@ try {
 		auto archive = new ZipArchive(zipAnswer.content);
 		foreach(name, am; archive.directory) {
 			if(name.endsWith(".d")) { // || name.endsWith(".di"))
+			// FIXME: skip internal things
 				auto path = buildSourceFilePath(project, versionTag, name);
 				if(path.indexOf("../") != -1) throw new Exception("illegal source filename in zip");
 				std.file.mkdirRecurse(path[0 .. path.lastIndexOf("/")]);
