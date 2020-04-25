@@ -1,5 +1,12 @@
-//  dmd -debug  -m64 dl ~/arsd/{cgi,dom,http2,jsvar} -version=scgi  && gzip dl && scp dl.gz root@droplet:/root/dpldocs
+// dmd -debug -g -m64 dl ~/arsd/{cgi,dom,http2,jsvar} -version=scgi  && gzip dl && scp dl.gz root@droplet:/root/dpldocs
+// curl -d clear http://dplug.dpldocs.info/reset-cache
 // FIXME: drop privs if called as root!!!!!!
+
+
+// document undocumented by default on dub side. figure out the core.sys problem
+
+
+// FIXME: figure out how to download bitbucket packages
 
 // Copyright Adam D. Ruppe 2018. All Rights Reserved.
 import arsd.dom;
@@ -10,6 +17,8 @@ import std.string;
 import std.file;
 import std.process;
 import std.zip;
+
+// rel="nofollow" to the manage page?
 
 /*
 	FIXME: read versions[0].sourcePaths off the dub api (it is an array) and use it to limit the source scan. also check sourceFiles, if present.
@@ -27,11 +36,14 @@ string findRootPage(string project, string versionTag) {
 		return "/" ~ versionTag ~ "/" ~ s;
 	}
 
+	if(project == "arsd-official")
+		return endit("arsd.html");
+
 	foreach(file; [
-		"index.html",
 		project ~ ".html",
 		project.replace("-", "_") ~ ".html",
-		project.replace("-", "") ~ ".html"
+		project.replace("-", "") ~ ".html",
+		"index.html",
 	])
 	{
 		if(std.file.exists(buildFilePath(project, versionTag, file, false)))
@@ -130,6 +142,13 @@ try {
 			if(versionTag == "source") {
 				versionTag = "master";
 				sourceRequested = true;
+			} else if(versionTag.length == 0) {
+				cgi.setResponseLocation(cgi.requestUri[1 .. $]);
+				return;
+			} else if(versionTag != "master" && (versionTag.length <= 3 || (versionTag[0] != 'v' && versionTag[0] != '~'))) {
+				cgi.setResponseStatus("404 Not Found");
+				cgi.write("Invalid tag, did you forget the leading v in the url?");
+				return;
 			}
 		} else {
 			versionTag = "master";
@@ -163,21 +182,61 @@ try {
 			return;
 		}
 
+		if(cgi.requestMethod == Cgi.RequestMethod.POST && file == "reset-cache") {
+			import std.file;
+			rmdirRecurse(buildMetaFilePath(project, versionTag, ""));
+			cgi.setResponseLocation(cgi.getCurrentCompleteUri[0 .. $-11]);
+			return;
+		}
+
 		// FIXME: set cache headers
 
 		if(file == "script.js") {
+			cgi.setResponseExpiresRelative(60 * 15, true);
 			cgi.setResponseContentType("text/javascript");
 			cgi.write(std.file.read("/dpldocs-build/script.js"), true);
 			return;
+		}
 
+		if(file == "search-docs.js") {
+			cgi.setResponseContentType("text/javascript");
+			cgi.write(std.file.read("/dpldocs-build/search-docs.js"), true);
+			return;
 		}
 
 		if(file == "style.css") {
+			cgi.setResponseExpiresRelative(60 * 15, true);
 			cgi.setResponseContentType("text/css");
 			cgi.write(std.file.read("/dpldocs-build/style.css"), true);
 			return;
 		}
+		if(file == "robots.txt") {
+			cgi.setResponseContentType("text/plain");
+			cgi.write(std.file.read("/dpldocs-build/robots.txt"), true);
+			return;
+		}
 
+		if(file == "favicon.ico") {
+			cgi.setResponseExpiresRelative(60 * 60 * 24 * 7, true);
+			cgi.setResponseContentType("image/png");
+			cgi.write(std.file.read("/dpldocs-build/favicon.ico"), true);
+			return;
+		}
+
+		if(file == "RobotoSlab-Regular.ttf") {
+			cgi.setResponseContentType("font/ttf");
+			cgi.setCache(true);
+			cgi.write(std.file.read("/dpldocs-build/RobotoSlab-Regular.ttf"), true);
+			return;
+		}
+		if(file == "RobotoSlab-Bold.ttf") {
+			cgi.setResponseContentType("font/ttf");
+			cgi.setCache(true);
+			cgi.write(std.file.read("/dpldocs-build/RobotoSlab-Bold.ttf"), true);
+			return;
+		}
+
+		try_again:
 		auto filePath = buildFilePath(project, versionTag, file, sourceRequested);
 
 		if(std.file.exists(filePath)) {
@@ -203,23 +262,48 @@ try {
 				default:
 					cgi.setResponseContentType("text/plain");
 			}
-			if(preZipped) {
+			if(preZipped && !cgi.acceptsGzip) {
+				// need to unzip it for this client...
+				import std.zlib;
+				cgi.write(uncompress(std.file.read(filePath), 0, 15 + 32 /* determine format from data */), true);
+			} else if(preZipped) {
 				cgi.header("Content-Encoding: gzip");
 				cgi.gzipResponse = false;
+				// prezipped - write the file directly, after
+				// saying it is zipped
+				cgi.setResponseExpiresRelative(60 * 5, true);
+				cgi.write(std.file.read(filePath), true);
+			} else {
+				// write the file directly
+				cgi.setResponseExpiresRelative(60 * 5, true);
+				cgi.write(std.file.read(filePath), true);
 			}
-			cgi.write(std.file.read(filePath), true);
 		} else {
-			cgi.setResponseStatus("404 Not Found");
-			auto better = findRootPage(project, versionTag);
-			if(better.length)
-				cgi.write("404. Try <a href=\"" ~ better ~ "\">" ~ better ~ "</a> as a starting point");
-			else
-				cgi.write("404 and I don't know what to suggest. send this link to adam plz");
+			if(file.startsWith("std.") || file.startsWith("core.")) {
+				cgi.setResponseLocation("//dpldocs.info/" ~ file.replace(".html", ""));
+			} else {
+				cgi.setResponseStatus("404 Not Found");
+				auto better = findRootPage(project, versionTag);
+				if(better.length)
+					cgi.write("404. Try <a href=\"" ~ better ~ "\">" ~ better ~ "</a> as a starting point");
+				else
+					cgi.write("404 and I don't know what to suggest. send this link to adam plz");
+			}
 		}
 	} else if(std.file.exists(buildMetaFilePath(project, versionTag, "working"))) {
 		cgi.write("The project docs are being built, please wait...");
+		cgi.write("<script>setTimeout(function() { location.reload(); }, 3000);</script>The project docs are being built, please wait...");
 	} else if(std.file.exists(buildMetaFilePath(project, versionTag, "failed"))) {
-		cgi.write("The project build failed. copy/paste this link to adam so he can fix the bug.");
+		import std.datetime;
+		if(Clock.currTime - std.file.timeLastModified(buildMetaFilePath(project, versionTag, "failed")) > dur!"days"(1)) {
+			std.file.remove(buildMetaFilePath(project, versionTag, "failed"));
+			goto try_again;
+		}
+		cgi.setResponseStatus("500 Internal Service Error");
+		cgi.write("The project build failed. copy/paste this link to adam (destructionator@gmail.com) so he can fix the bug. Or the repo is here https://github.com/adamdruppe/dpldocs but i don't often push so it might be out of date.");
+		cgi.write("<br><pre>");
+		cgi.write(htmlEntitiesEncode(readText(buildMetaFilePath(project, versionTag, "failed"))));
+		cgi.write("</pre>");
 	} else {
 		// build the project
 		std.file.mkdirRecurse(buildMetaFilePath(project, versionTag, ""));
@@ -233,16 +317,39 @@ try {
 		cgi.write("Downloading package info...<br>");
 		cgi.flush();
 		auto answer = j.waitForCompletion();
-		if(answer.code != 200) {
-			throw new Exception("no such package");
+		if(answer.code != 200 || answer.contentText == "null") { // lol dub
+			throw new Exception("no such package (received from dub: " ~ to!string(answer.code) ~ "\n\n"~answer.contentText ~ ")");
 		}
 
 		auto json = var.fromJson(answer.contentText);
-		if(json.repository.kind != "github") {
-			throw new Exception("idk how to get this package");
-		}
 
-		auto url = "https://github.com/" ~ json.repository.owner.get!string ~ "/" ~ json.repository.project.get!string ~ "/archive/"~versionTag~".zip";
+		string url;
+		
+		switch(json.repository.kind.get!string) {
+			case "github":
+				url = "https://github.com/" ~ json.repository.owner.get!string ~ "/" ~ json.repository.project.get!string ~ "/archive/"~versionTag~".zip";
+			break;
+			case "gitlab":
+				url = "https://gitlab.com/" ~ json.repository.owner.get!string ~ "/" ~ json.repository.project.get!string ~ "/-/archive/"~versionTag~"/"
+					~ json.repository.project.get!string ~ "-"~versionTag~".zip";
+			break;
+			case "bitbucket":
+				// FIXME
+
+/*
+
+(19:58:21) WebFreak: for this one project zip is https://gitlab.com/<username>/<projectname>/-/archive/<tag>/<projectname>-<tag>.zip
+(19:59:03) adam_d_ruppe: k. happen to know bitbucket while you're at it?
+(20:00:03) WebFreak: if you want a reliable API, it's https://gitlab.com/api/v4/projects/<id>/repository/archive.zip
+(20:00:06) WebFreak: for gitlab
+(20:00:16) WebFreak: id == <username>/<projectname>, url encoded
+(20:00:23) WebFreak: so <username>%2F<projectname>
+(20:00:49) WebFreak: https://docs.gitlab.com/ee/api/repositories.html#get-file-archive here are the docs
+(20:02:08) WebFreak: bitbucket (didn't check the API) download is https://bitbucket.org/<username>/<project>/get/<commit-sha (any length)>.zip
+*/
+			default:
+				throw new Exception("idk how to get this package type " ~ json.repository.kind.get!string ~ "");
+		}
 
 		redirected:
 		auto z = get(url);
@@ -250,7 +357,7 @@ try {
 		cgi.flush();
 		auto zipAnswer = z.waitForCompletion();
 		if(zipAnswer.code != 200) {
-			if(zipAnswer.code == 302) {
+			if(zipAnswer.code == 302 || zipAnswer.code == 301) {
 				url = zipAnswer.headersHash["Location"];
 				goto redirected;
 			}
@@ -290,7 +397,8 @@ try {
 			if(name.endsWith(".d")) { // || name.endsWith(".di"))
 			// FIXME: skip internal things
 				auto path = buildSourceFilePath(project, versionTag, name);
-				if(path.indexOf("../") != -1) throw new Exception("illegal source filename in zip");
+				if(name.indexOf("../") != -1) throw new Exception("illegal source filename in zip " ~ path);
+				if(name.indexOf("/") == 0) throw new Exception("illegal source filename in zip " ~ path);
 				std.file.mkdirRecurse(path[0 .. path.lastIndexOf("/")]);
 				archive.expand(am);
 				std.file.write(path, am.expandedData);
@@ -307,6 +415,9 @@ try {
 			"-o", buildFilePath(project, versionTag, "", false),
 			"-uiz", buildSourceFilePath(project, versionTag, "")
 		);
+
+		shellCmd ~= " 2>&1"; // redirect stderr here too so we can easily enough see exception data
+
 		cgi.write("<tt>$ " ~ shellCmd.replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;") ~ "</tt><br>");
 		cgi.flush();
 		std.file.chdir("/dpldocs-build");
@@ -329,16 +440,16 @@ try {
 				cgi.write("The generator completed, but could find no docs.");
 			}
 		} else {
-			cgi.write("adrdox failed :(");
-			throw new Exception("suck");
+			throw new Exception("adrdox failed :(");
 		}
 	}
 } catch(Throwable t) {
 	if(std.file.exists(buildMetaFilePath(project, versionTag, "working")))
 		std.file.remove(buildMetaFilePath(project, versionTag, "working"));
 	std.file.write(buildMetaFilePath(project, versionTag, "failed"), t.toString);
-	cgi.write("<br><br>Failed:<br>" ~ t.msg.replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;"));
+	cgi.write("<br><br>Failed (try contacting destructionator@gmail.com or trying again tomorrow):<br>" ~ t.msg.replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;"));
 }
 }
 
 mixin GenericMain!app;
+
