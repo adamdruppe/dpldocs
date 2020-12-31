@@ -1,12 +1,10 @@
-// dmd -debug -g -m64 dl ~/arsd/{cgi,dom,http2,jsvar} -version=scgi  && gzip dl && scp dl.gz root@droplet:/root/dpldocs
+// dmdi -debug -g -m64 dl -version=scgi  && gzip dl && scp dl.gz root@droplet:/root/dpldocs
 // curl -d clear http://dplug.dpldocs.info/reset-cache
 // FIXME: drop privs if called as root!!!!!!
 
 
 // document undocumented by default on dub side. figure out the core.sys problem
 
-
-// FIXME: figure out how to download bitbucket packages
 
 // Copyright Adam D. Ruppe 2018. All Rights Reserved.
 import arsd.dom;
@@ -17,6 +15,8 @@ import std.string;
 import std.file;
 import std.process;
 import std.zip;
+
+import arsd.postgres;
 
 // rel="nofollow" to the manage page?
 
@@ -92,19 +92,41 @@ string sanitize(string s) {
 			ch == '.' ||
 			ch == '-' ||
 			ch == '_'
+			|| ch == '~' || ch == '(' || ch == ')' // like this(this) and ~master
 		))
 		{
-			throw new Exception("invalid char");
+			throw new UserErrorException("invalid char");
 		}
 	}
 
 	return s;
 }
 
+class UserErrorException : Exception {
+	this(string s, string file = __FILE__, size_t line = __LINE__) {
+		super(s, file, line);
+	}
+}
+class DubException : Exception {
+	this(string s, string file = __FILE__, size_t line = __LINE__) {
+		super(s, file, line);
+	}
+}
+class RepoException : Exception {
+	this(string s, string file = __FILE__, size_t line = __LINE__) {
+		super(s, file, line);
+	}
+}
+
 void app(Cgi cgi) {
 	immutable project = cgi.host.replace(".dpldocs.info", "");
+	import std.algorithm;
 	if(project == "www") {
 		cgi.setResponseLocation("https://dpldocs.info/" ~ cgi.pathInfo);
+		return;
+	} else if(project.canFind(".")) {
+		cgi.setResponseStatus("404 Not Found");
+		cgi.write("Invalid domain", true);
 		return;
 	}
 	string versionTag;
@@ -166,9 +188,9 @@ try {
 	file.sanitize();
 
 	if(project.length == 0)
-		throw new Exception("No project requested");
+		throw new UserErrorException("No project requested");
 	if(versionTag.length == 0)
-		throw new Exception("No version requested");
+		throw new UserErrorException("No version requested");
 	if(versionTag != "master" && versionTag[0] != 'v') {
 		cgi.setResponseLocation("/v" ~ versionTag ~ "/" ~(sourceRequested ? "source/" : "") ~ file ~ query);
 		return;
@@ -295,16 +317,20 @@ try {
 		cgi.write("<script>setTimeout(function() { location.reload(); }, 3000);</script>The project docs are being built, please wait...");
 	} else if(std.file.exists(buildMetaFilePath(project, versionTag, "failed"))) {
 		import std.datetime;
-		if(Clock.currTime - std.file.timeLastModified(buildMetaFilePath(project, versionTag, "failed")) > dur!"days"(1)) {
+		if(Clock.currTime - std.file.timeLastModified(buildMetaFilePath(project, versionTag, "failed")) > dur!"hours"(6)) {
 			std.file.remove(buildMetaFilePath(project, versionTag, "failed"));
 			goto try_again;
 		}
 		cgi.setResponseStatus("500 Internal Service Error");
-		cgi.write("The project build failed. copy/paste this link to adam (destructionator@gmail.com) so he can fix the bug. Or the repo is here https://github.com/adamdruppe/dpldocs but i don't often push so it might be out of date.");
+		cgi.write("The project build failed. It will try again in about 6 hours or you can copy/paste this link to adam (destructionator@gmail.com) so he can fix the bug and/or reset it early. Or the repo is here https://github.com/adamdruppe/dpldocs but i don't often push so it might be out of date.");
 		cgi.write("<br><pre>");
 		cgi.write(htmlEntitiesEncode(readText(buildMetaFilePath(project, versionTag, "failed"))));
 		cgi.write("</pre>");
 	} else {
+
+
+		auto db = new PostgreSql("dbname=adrdox user=root");
+
 		// build the project
 		std.file.mkdirRecurse(buildMetaFilePath(project, versionTag, ""));
 		std.file.write(buildMetaFilePath(project, versionTag, "working"), "foo");
@@ -313,40 +339,65 @@ try {
 			std.file.write(buildMetaFilePath(project, versionTag, "success"), "");
 		}
 
-		auto j = get("http://code.dlang.org/api/packages/" ~ project ~ "/info");
-		cgi.write("Downloading package info...<br>");
-		cgi.flush();
-		auto answer = j.waitForCompletion();
-		if(answer.code != 200 || answer.contentText == "null") { // lol dub
-			throw new Exception("no such package (received from dub: " ~ to!string(answer.code) ~ "\n\n"~answer.contentText ~ ")");
+		HttpResponse answer;
+
+		if(project == "druntime")
+			goto skip_dub;
+
+		try {
+			auto j = get("http://code.dlang.org/api/packages/" ~ project ~ "/info");
+			cgi.write("Downloading package info...<br>");
+			cgi.flush();
+			answer = j.waitForCompletion();
+			if(answer.code != 200 || answer.contentText == "null") { // lol dub
+				throw new DubException("no such package (received from dub: " ~ to!string(answer.code) ~ "\n\n"~answer.contentText ~ ")");
+			}
+		} catch(DubException e) {
+			throw e;
+		} catch(Exception e) {
+			throw new DubException(e.toString());
 		}
 
-		auto json = var.fromJson(answer.contentText);
+		skip_dub:
+		var json;
+
+		if(project == "druntime") {
+			// druntime not on dub but i want to pretend it is
+			auto dlVersion = versionTag;
+
+			json = var.fromJson(`{
+				"repository": { "kind":"github", "owner": "dlang", "project":"druntime" },
+				"name" : "druntime",
+				"versions": {}
+			}`);
+		} else {
+			json = var.fromJson(answer.contentText);
+		}
 
 		string url;
 		
 		switch(json.repository.kind.get!string) {
 			case "github":
-				url = "https://github.com/" ~ json.repository.owner.get!string ~ "/" ~ json.repository.project.get!string ~ "/archive/"~versionTag~".zip";
+
+				auto dlVersion = versionTag;
+
+				if(dlVersion == "master") {
+					auto client = new HttpApiClient!()("https://api.github.com/", null);
+					client.httpClient.userAgent = "adamdruppe-dpldocs";
+					auto info = client.rest.repos[json.repository.owner.get!string][json.repository.project.get!string].GET().result;
+					dlVersion = info.default_branch.get!string;
+				}
+
+				url = "https://github.com/" ~ json.repository.owner.get!string ~ "/" ~ json.repository.project.get!string ~ "/archive/"~dlVersion~".zip";
 			break;
+			// thanks to WebFreak on IRC for helping with these
 			case "gitlab":
 				url = "https://gitlab.com/" ~ json.repository.owner.get!string ~ "/" ~ json.repository.project.get!string ~ "/-/archive/"~versionTag~"/"
 					~ json.repository.project.get!string ~ "-"~versionTag~".zip";
 			break;
 			case "bitbucket":
-				// FIXME
-
-/*
-
-(19:58:21) WebFreak: for this one project zip is https://gitlab.com/<username>/<projectname>/-/archive/<tag>/<projectname>-<tag>.zip
-(19:59:03) adam_d_ruppe: k. happen to know bitbucket while you're at it?
-(20:00:03) WebFreak: if you want a reliable API, it's https://gitlab.com/api/v4/projects/<id>/repository/archive.zip
-(20:00:06) WebFreak: for gitlab
-(20:00:16) WebFreak: id == <username>/<projectname>, url encoded
-(20:00:23) WebFreak: so <username>%2F<projectname>
-(20:00:49) WebFreak: https://docs.gitlab.com/ee/api/repositories.html#get-file-archive here are the docs
-(20:02:08) WebFreak: bitbucket (didn't check the API) download is https://bitbucket.org/<username>/<project>/get/<commit-sha (any length)>.zip
-*/
+				url = "https://bitbucket.org/"~ json.repository.owner.get!string ~ "/"~ json.repository.project.get!string ~"/get/" ~versionTag~ ".zip";
+			break;
 			default:
 				throw new Exception("idk how to get this package type " ~ json.repository.kind.get!string ~ "");
 		}
@@ -358,10 +409,13 @@ try {
 		auto zipAnswer = z.waitForCompletion();
 		if(zipAnswer.code != 200) {
 			if(zipAnswer.code == 302 || zipAnswer.code == 301) {
-				url = zipAnswer.headersHash["Location"];
+				if("Location" in zipAnswer.headersHash)
+					url = zipAnswer.headersHash["Location"];
+				else
+					url = zipAnswer.headersHash["location"];
 				goto redirected;
 			}
-			throw new Exception("zip failed " ~ to!string(zipAnswer.code));
+			throw new RepoException("zip failed " ~ to!string(zipAnswer.code));
 		}
 
 		string jsonVersion = versionTag;
@@ -375,6 +429,11 @@ try {
 		string dublink = "http://code.dlang.org/packages/" ~ project;
 		string gitlink = "https://github.com/" ~ json.repository.owner.get!string ~ "/" ~ json.repository.project.get!string;
 
+		if(project == "druntime") {
+			homepage = "http://dlang.org/";
+			date = Clock.currTime.toISOExtString;
+		}
+
 		foreach(item; json.versions) {
 			if(item["version"] == jsonVersion) {
 				date = item["date"].get!string;
@@ -384,6 +443,9 @@ try {
 				break;
 			}
 		}
+
+		if(date.length == 0)
+			date = Clock.currTime.toISOExtString;
 
 		string headerTitle = project ~ " " ~ (versionTag == "master" ? "~master" : versionTag);
 		if(date.length)
@@ -405,6 +467,31 @@ try {
 			}
 		}
 
+		auto dubName = json.name.get!string;
+
+		string dpid;
+		foreach(row; db.query("SELECT id FROM dub_package WHERE name = ?", dubName))
+			dpid = row[0];
+		if(dpid.length == 0) {
+			foreach(row; db.query("INSERT INTO dub_package (name, url_name, description, adrdox_cmdline_options) VALUES (?, ?, ?, '') RETURNING id",
+			dubName, dubName, json.versions[0].description.get!string))
+				dpid = row[0];
+		}
+
+		string pvid;
+		foreach(row; db.query("SELECT id FROM package_version WHERE dub_package_id = ? AND version_tag = ?", dpid, versionTag))
+			pvid = row[0];
+
+		if(pvid.length == 0) {
+			foreach(row; db.query("INSERT INTO package_version (dub_package_id, version_tag, release_date, is_latest) VALUES (?, ?, ?, ?) RETURNING id",
+				dpid, versionTag, date, versionTag == "master"))
+			{
+				pvid = row[0];
+			}
+		}
+
+		// FIXME: if it is master we could update the release date
+
 		cgi.write("Generating documentation... this may take a few minutes...<br>\n");
 		auto shellCmd = escapeShellCommand(
 			"./doc2", "--copy-standard-files=false",
@@ -412,6 +499,14 @@ try {
 			"--header-link", "Home=" ~ homepage,
 			"--header-link", "Dub=" ~ dublink,
 			"--header-link", "Repo=" ~ gitlink,
+			"--package-path", "core.*=//dpldocs.info/experimental-docs/",
+			"--package-path", "std.*=//phobos.dpldocs.info/",
+			"--package-path", "arsd.*=//arsd-official.dpldocs.info/",
+
+			"--postgresConnectionString", "dbname=adrdox user=root",
+			"--postgresVersionId", to!string(pvid),
+
+			"--document-undocumented",
 			"-o", buildFilePath(project, versionTag, "", false),
 			"-uiz", buildSourceFilePath(project, versionTag, "")
 		);
@@ -443,11 +538,16 @@ try {
 			throw new Exception("adrdox failed :(");
 		}
 	}
+} catch(UserErrorException t) {
+	if(std.file.exists(buildMetaFilePath(project, versionTag, "working")))
+		std.file.remove(buildMetaFilePath(project, versionTag, "working"));
+
+	cgi.write("<br><br>You need to fix your url:<br>" ~ t.msg.replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;"));
 } catch(Throwable t) {
 	if(std.file.exists(buildMetaFilePath(project, versionTag, "working")))
 		std.file.remove(buildMetaFilePath(project, versionTag, "working"));
 	std.file.write(buildMetaFilePath(project, versionTag, "failed"), t.toString);
-	cgi.write("<br><br>Failed (try contacting destructionator@gmail.com or trying again tomorrow):<br>" ~ t.msg.replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;"));
+	cgi.write("<br><br>Failed (try contacting destructionator@gmail.com or trying again tomorrow; the retry timeout is about 6 hours):<br>" ~ t.msg.replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;"));
 }
 }
 
