@@ -485,7 +485,8 @@ string getSourceDir(string adrdox_config) {
 
 void rebuild(void delegate(string s) update, string project, string versionTag) {
 
-	auto db = new PostgreSql("dbname=adrdox user=root");
+	auto dbString = environment.get("DPLDOCS_DB", "dbname=adrdox user=root");
+	auto db = new PostgreSql(dbString);
 
 	// build the project
 	std.file.mkdirRecurse(buildMetaFilePath(project, versionTag, ""));
@@ -685,7 +686,7 @@ void rebuild(void delegate(string s) update, string project, string versionTag) 
 		"--package-path", "std.*=//phobos.dpldocs.info/",
 		"--package-path", "arsd.*=//arsd-official.dpldocs.info/",
 
-		"--postgresConnectionString", "dbname=adrdox user=root",
+		"--postgresConnectionString", dbString,
 		"--postgresVersionId", to!string(pvid),
 
 		"--document-undocumented=" ~ documentUndocumented,
