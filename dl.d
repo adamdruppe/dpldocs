@@ -132,7 +132,10 @@ class RepoException : Exception {
 }
 
 void app(Cgi cgi) {
-	immutable project = cgi.host.replace(".dpldocs.info", "").replace("druntime", "dmd");
+	immutable project = cgi.host
+		.split(":")[0]
+		.replace(".dpldocs.info", "")
+		.replace("druntime", "dmd");
 	import std.algorithm;
 	if(project == "www") {
 		cgi.setResponseLocation("https://dpldocs.info/" ~ cgi.pathInfo);
