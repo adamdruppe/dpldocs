@@ -132,7 +132,10 @@ class RepoException : Exception {
 }
 
 void app(Cgi cgi) {
-	immutable project = cgi.host.replace(".dpldocs.info", "").replace("druntime", "dmd");
+	immutable project = cgi.host
+		.split(":")[0]
+		.replace(".dpldocs.info", "")
+		.replace("druntime", "dmd");
 	import std.algorithm;
 	if(project == "www") {
 		cgi.setResponseLocation("https://dpldocs.info/" ~ cgi.pathInfo);
@@ -482,7 +485,8 @@ string getSourceDir(string adrdox_config) {
 
 void rebuild(void delegate(string s) update, string project, string versionTag) {
 
-	auto db = new PostgreSql("dbname=adrdox user=root");
+	auto dbString = environment.get("DPLDOCS_DB", "dbname=adrdox user=root");
+	auto db = new PostgreSql(dbString);
 
 	// build the project
 	std.file.mkdirRecurse(buildMetaFilePath(project, versionTag, ""));
@@ -682,7 +686,7 @@ void rebuild(void delegate(string s) update, string project, string versionTag) 
 		"--package-path", "std.*=//phobos.dpldocs.info/",
 		"--package-path", "arsd.*=//arsd-official.dpldocs.info/",
 
-		"--postgresConnectionString", "dbname=adrdox user=root",
+		"--postgresConnectionString", dbString,
 		"--postgresVersionId", to!string(pvid),
 
 		"--document-undocumented=" ~ documentUndocumented,
